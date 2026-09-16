@@ -1,0 +1,13 @@
+[project]
+name = "mini-doc-qa-es-redis"
+version = "0.2.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.6",
+  "python-multipart>=0.0.9",
+  "numpy>=1.24",
+  "elasticsearch>=8.11.0",
+  "redis>=5.0.0",
+]
