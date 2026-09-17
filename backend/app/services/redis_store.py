@@ -4,7 +4,10 @@ from __future__ import annotations
 import os
 import redis
 from redis.commands.search.field import NumericField, TextField, TagField, VectorField
-from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+try:
+    from redis.commands.search.index_definition import IndexDefinition, IndexType
+except ImportError:
+    from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 
 REDIS_URL = os.getenv("DOCQA_REDIS_URL", "redis://localhost:6379/0")
 REDIS_INDEX = os.getenv("DOCQA_REDIS_INDEX", "idx:docqa_chunks")
