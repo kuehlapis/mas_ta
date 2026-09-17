@@ -60,8 +60,6 @@ The report is organised by page and section (one case study per page), so sectio
 2. **Fuse with Reciprocal Rank Fusion (RRF):** each chunk gets `1 / (60 + rank)` from each list it appears in, and the scores are summed. Ranks are used instead of raw scores because BM25 scores and cosine similarity are on different scales.
 3. **Rerank** the top 20 fused chunks, plus each retriever's own top 5, with a cross-encoder (FlashRank `ms-marco-TinyBERT-L-2-v2`, local, no API key). It reads the question and chunk together and returns the final order. Adding each retriever's top 5 ensures a chunk ranked 1st by only one retriever isn't lost during fusion.
 
-On the 12 eval questions, the correct page ranks 1st for 11 (plain RRF alone: 9).
-
 **Ask** takes the top 6 chunks and returns the passage (1–3 consecutive sentences) that best covers the question's terms, quoted verbatim. The citation is the chunk that passage came from, and the API checks that every `[n]` exists and every quote appears in its snippet. Sentences that look like prompt injection are dropped and redacted. If nothing matches well enough, it answers "I don't know".
 
 ### What I would improve next
