@@ -1,33 +1,97 @@
 \
 from __future__ import annotations
 
+import pymupdf
+import pymupdf4llm
 import hashlib
 import re
 from dataclasses import dataclass
 import numpy as np
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 
 def _normalize_whitespace(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def chunk_text(text: str, *, max_chars: int = 900, overlap: int = 120) -> list[str]:
-    paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
-    chunks: list[str] = []
-    cur = ""
-    for p in paras:
-        p = _normalize_whitespace(p)
-        if not cur:
-            cur = p
+PAGE_BREAK = "\f"
+
+MAX_CHUNK_CHARS = 1500
+CHUNK_OVERLAP = 150
+MIN_SECTION_CHARS = 200
+
+_HEADERS = [("#" * i, f"h{i}") for i in range(1, 7)]
+
+
+def pdf_to_text(data: bytes) -> str:
+    """Convert a PDF to Markdown per page, joined with form feeds so ingestion
+    can recover page numbers."""
+
+    with pymupdf.open(stream=data, filetype="pdf") as doc:
+        pages = pymupdf4llm.to_markdown(doc, page_chunks=True, show_progress=False)
+    return PAGE_BREAK.join(_clean_markdown(p["text"]) for p in pages)
+
+
+def _clean_markdown(md: str) -> str:
+    md = md.replace("�", "'")  
+    md = re.sub(r"<!-- (Start|End) of picture text -->", "", md)
+    md = md.replace("<br>", " ")
+    md = re.sub(r"^[ \t]*\d{1,3}[ \t]*$", "", md, flags=re.M)
+    return re.sub(r"\n{3,}", "\n\n", md).strip()
+
+
+def split_pages(content: str) -> list[tuple[int, str]]:
+    """(1-based page number, text) pairs; plain-text documents are a single page."""
+    return [(i + 1, p) for i, p in enumerate(content.split(PAGE_BREAK)) if p.strip()]
+
+
+def _heading_text(h: str) -> str:
+    return _normalize_whitespace(re.sub(r"<[^>]+>|[*_`]", "", h))
+
+
+def chunk_text(text: str) -> list[str]:
+    """Split one page of Markdown into chunks.
+
+    1. MarkdownHeaderTextSplitter cuts the page into sections at headings.
+    2. Sections shorter than MIN_SECTION_CHARS are merged into the following one.
+    3. RecursiveCharacterTextSplitter caps each section at MAX_CHUNK_CHARS.
+    4. Each chunk is prefixed with "[page title > section heading]" so a chunk from
+       the middle of a section still carries its topic for BM25 and embeddings.
+    """
+
+    sections = MarkdownHeaderTextSplitter(_HEADERS, strip_headers=False).split_text(text)
+    headed = [
+        (_heading_text(next(reversed(s.metadata.values()), "")), s.page_content.strip())
+        for s in sections
+        if s.page_content.strip()
+    ]
+    if not headed:
+        return []
+
+    merged: list[tuple[str, str]] = []
+    carry = ""
+    for heading, body in headed:
+        body = f"{carry}\n\n{body}" if carry else body
+        if len(body) < MIN_SECTION_CHARS:
+            carry = body
             continue
-        if len(cur) + 1 + len(p) <= max_chars:
-            cur = f"{cur} {p}"
+        carry = ""
+        merged.append((heading, body))
+    if carry:
+        if merged:
+            merged[-1] = (merged[-1][0], f"{merged[-1][1]}\n\n{carry}")
         else:
-            chunks.append(cur)
-            tail = cur[-overlap:] if overlap > 0 else ""
-            cur = (tail + " " + p).strip() if tail else p
-    if cur:
-        chunks.append(cur)
+            merged.append((headed[-1][0], carry))
+
+    page_title = headed[0][0]
+    chunks: list[str] = []
+    for heading, body in merged:
+        crumbs = [c for c in dict.fromkeys([page_title, heading]) if c]
+        prefix = f"[{' > '.join(crumbs)}]\n" if crumbs else ""
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=max(MAX_CHUNK_CHARS - len(prefix), 500), chunk_overlap=CHUNK_OVERLAP
+        )
+        chunks += [prefix + part for part in splitter.split_text(body)]
     return chunks
 
 
@@ -58,3 +122,14 @@ class ScoredChunk:
     chunk_id: str
     text: str
     score: float
+    page: int = 1
+    filename: str = ""
+    keyword_rank: int | None = None  # 1-based position in the Elasticsearch results
+    semantic_rank: int | None = None  # 1-based position in the Redis KNN results
+    rerank_rank: int | None = None  # 1-based position after cross-encoder reranking (hybrid only)
+
+
+def split_section(text: str) -> tuple[str, str]:
+    """Separate the "[page title > section]" line that chunk_text prepends."""
+    m = re.match(r"\[([^\]\n]*)\]\n", text)
+    return (m.group(1), text[m.end():]) if m else ("", text)

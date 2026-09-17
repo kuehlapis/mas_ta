@@ -12,18 +12,22 @@ def es_client() -> Elasticsearch:
     return Elasticsearch(ES_URL)
 
 
+ES_PROPERTIES = {
+    "doc_id": {"type": "keyword"},
+    "chunk_id": {"type": "keyword"},
+    "filename": {"type": "keyword"},
+    "ord": {"type": "integer"},
+    "page": {"type": "integer"},
+    # "text" keeps exact word forms (names, codes like "AML/CFT"); "text.en" adds English
+    # stemming and stopword removal so "fined"/"fines" and "penalties"/"penalty" match.
+    "text": {"type": "text", "fields": {"en": {"type": "text", "analyzer": "english"}}},
+}
+
+
 def ensure_es_index() -> None:
     es = es_client()
     if es.indices.exists(index=ES_INDEX):
+        # adding new fields to an existing mapping is allowed
+        es.indices.put_mapping(index=ES_INDEX, properties=ES_PROPERTIES)
         return
-    es.indices.create(
-        index=ES_INDEX,
-        mappings={
-            "properties": {
-                "doc_id": {"type": "keyword"},
-                "chunk_id": {"type": "keyword"},
-                "ord": {"type": "integer"},
-                "text": {"type": "text"},
-            }
-        },
-    )
+    es.indices.create(index=ES_INDEX, mappings={"properties": ES_PROPERTIES})

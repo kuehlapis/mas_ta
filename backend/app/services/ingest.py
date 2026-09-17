@@ -6,8 +6,9 @@ import time
 from datetime import datetime
 
 import numpy as np
+from elasticsearch import helpers
 
-from app.services.rag import chunk_text, embed_hash
+from app.services.rag import chunk_text, embed_hash, split_pages
 from app.services.store import get_conn
 from app.services.es_store import es_client, ES_INDEX
 from app.services.redis_store import redis_client, REDIS_PREFIX
@@ -47,13 +48,14 @@ def list_documents() -> list[dict]:
 
 def ingest_document(doc_id: str) -> int:
     with get_conn() as conn:
-        row = conn.execute("SELECT content FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
+        row = conn.execute("SELECT filename, content FROM documents WHERE doc_id = ?", (doc_id,)).fetchone()
         if not row:
             raise KeyError("document not found")
-        content = row[0]
+        filename, content = row
         conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
 
-    chunks = chunk_text(content)
+    # chunk within each page so every chunk maps to exactly one page
+    chunks = [(page, text) for page, page_text in split_pages(content) for text in chunk_text(page_text)]
     es = es_client()
     r = redis_client()
 
@@ -63,8 +65,9 @@ def ingest_document(doc_id: str) -> int:
     except Exception:
         pass
     try:
-        for key in r.scan_iter(match=f"{REDIS_PREFIX}{doc_id}:*"):
-            r.delete(key)
+        stale = list(r.scan_iter(match=f"{REDIS_PREFIX}{doc_id}:*"))
+        if stale:
+            r.delete(*stale)
     except Exception:
         pass
 
@@ -72,16 +75,28 @@ def ingest_document(doc_id: str) -> int:
     pipe = r.pipeline()
 
     with get_conn() as conn:
-        for i, text in enumerate(chunks):
+        for i, (page, text) in enumerate(chunks):
             chunk_id = hashlib.sha1(f"{doc_id}:{i}".encode("utf-8")).hexdigest()[:20]
             emb = embed_hash(text).astype(np.float32)
             conn.execute(
-                "INSERT INTO chunks(chunk_id, doc_id, ord, text, embedding) VALUES (?, ?, ?, ?, ?)",
-                (chunk_id, doc_id, i, text, emb.tobytes()),
+                "INSERT INTO chunks(chunk_id, doc_id, ord, page, text, embedding) VALUES (?, ?, ?, ?, ?, ?)",
+                (chunk_id, doc_id, i, page, text, emb.tobytes()),
             )
 
-            actions.append({"index": {"_index": ES_INDEX}})
-            actions.append({"doc_id": doc_id, "chunk_id": chunk_id, "ord": i, "text": text})
+            actions.append(
+                {
+                    "_index": ES_INDEX,
+                    "_id": chunk_id,
+                    "_source": {
+                        "doc_id": doc_id,
+                        "chunk_id": chunk_id,
+                        "filename": filename,
+                        "ord": i,
+                        "page": page,
+                        "text": text,
+                    },
+                }
+            )
 
             key = f"{REDIS_PREFIX}{doc_id}:{chunk_id}"
             pipe.hset(
@@ -89,13 +104,15 @@ def ingest_document(doc_id: str) -> int:
                 mapping={
                     "doc_id": doc_id,
                     "chunk_id": chunk_id,
+                    "filename": filename,
+                    "page": page,
                     "text": text,
                     "embedding": emb.tobytes(),
                 },
             )
 
     if actions:
-        es.bulk(operations=actions, refresh=True)
+        helpers.bulk(es, actions, refresh=True)
     pipe.execute()
 
     return len(chunks)

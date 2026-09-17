@@ -1,10 +1,14 @@
 \
 from __future__ import annotations
 
-from fastapi import APIRouter, File, UploadFile, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, Field, ValidationError
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.schemas import DocumentCreateResponse, DocumentListResponse, IngestResponse
+from app.services.rag import pdf_to_text
 from app.services.ingest import create_document, ingest_document, list_documents
 
 router = APIRouter(prefix="/documents")
@@ -15,23 +19,64 @@ class TextDocumentRequest(BaseModel):
     content: str = Field(min_length=1, max_length=2_000_000)
 
 
-@router.post("", response_model=DocumentCreateResponse)
-async def upload_document(file: UploadFile | None = File(default=None), body: TextDocumentRequest | None = None):
-    if file is None and body is None:
-        raise HTTPException(status_code=400, detail="Provide either a file upload or a JSON body.")
-    if file is not None and body is not None:
-        raise HTTPException(status_code=400, detail="Provide either file OR body, not both.")
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
-    if file is not None:
+# FastAPI can't bind a multipart file and a JSON body in one signature (a File param
+# forces the whole body to be form data), so the content type is dispatched by hand
+# and both shapes are declared for the OpenAPI docs.
+_UPLOAD_OPENAPI = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "properties": {"file": {"type": "string", "format": "binary"}},
+                    "required": ["file"],
+                }
+            },
+            "application/json": {"schema": TextDocumentRequest.model_json_schema()},
+        },
+    }
+}
+
+
+@router.post("", response_model=DocumentCreateResponse, openapi_extra=_UPLOAD_OPENAPI)
+async def upload_document(request: Request):
+    content_type = request.headers.get("content-type", "")
+
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        file = form.get("file")
+        if not isinstance(file, StarletteUploadFile):
+            raise HTTPException(status_code=400, detail="Multipart upload needs a 'file' field.")
         data = await file.read()
-        if len(data) > 5 * 1024 * 1024:
+        if len(data) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="File too large (max 5MB).")
-        content = data.decode("utf-8", errors="replace")
-        doc_id = create_document(filename=file.filename or "upload.txt", content=content)
-        return {"doc_id": doc_id}
+        if data.startswith(b"%PDF"):
+            try:
+                content = await run_in_threadpool(pdf_to_text, data)  # ~15s for a 27-page PDF
+            except Exception:
+                raise HTTPException(status_code=400, detail="Could not read PDF.")
+        else:
+            content = data.decode("utf-8", errors="replace")
+        filename = file.filename or "upload.txt"
 
-    doc_id = create_document(filename=body.filename, content=body.content)
-    return {"doc_id": doc_id}
+    elif content_type.startswith("application/json"):
+        try:
+            body = TextDocumentRequest.model_validate_json(await request.body())
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=jsonable_encoder(e.errors(include_url=False)))
+        filename, content = body.filename, body.content
+
+    else:
+        raise HTTPException(
+            status_code=415, detail="Send multipart/form-data with a 'file' field, or a JSON body {filename, content}."
+        )
+
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="Document has no extractable text.")
+    return {"doc_id": create_document(filename=filename, content=content)}
 
 
 @router.get("", response_model=DocumentListResponse)

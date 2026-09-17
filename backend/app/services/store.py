@@ -34,6 +34,9 @@ def init_db() -> None:
             );
             """
         )
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(chunks);")}
+        if "page" not in cols:  
+            conn.execute("ALTER TABLE chunks ADD COLUMN page INTEGER NOT NULL DEFAULT 1;")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);")
 
 

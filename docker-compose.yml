@@ -35,6 +35,8 @@ services:
       - ./.env.example
     ports:
       - "8000:8000"
+    volumes:
+      - ./backenddata:/data  # keep SQLite in sync with the persisted ES/Redis data across rebuilds
     depends_on:
       elasticsearch:
         condition: service_healthy
