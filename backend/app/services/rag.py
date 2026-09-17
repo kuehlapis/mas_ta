@@ -46,7 +46,7 @@ def split_pages(content: str) -> list[tuple[int, str]]:
 
 
 def _heading_text(h: str) -> str:
-    return _normalize_whitespace(re.sub(r"[*_`]", "", h))
+    return _normalize_whitespace(re.sub(r"<[^>]+>|[*_`]", "", h))
 
 
 def chunk_text(text: str) -> list[str]:
@@ -124,3 +124,11 @@ class ScoredChunk:
     score: float
     page: int = 1
     filename: str = ""
+    keyword_rank: int | None = None  # 1-based position in the Elasticsearch results
+    semantic_rank: int | None = None  # 1-based position in the Redis KNN results
+
+
+def split_section(text: str) -> tuple[str, str]:
+    """Separate the "[page title > section]" line that chunk_text prepends."""
+    m = re.match(r"\[([^\]\n]*)\]\n", text)
+    return (m.group(1), text[m.end():]) if m else ("", text)

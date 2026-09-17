@@ -37,9 +37,14 @@ class SearchRequest(BaseModel):
 class SearchResult(BaseModel):
     doc_id: str
     chunk_id: str
-    score: float
+    filename: str
+    page: int
+    section: str = Field(description="Page title > section heading the chunk belongs to")
+    score: float = Field(description="BM25 (keyword), cosine similarity (semantic) or RRF sum (hybrid)")
     snippet: str
     mode: Mode
+    keyword_rank: int | None = Field(default=None, description="1-based rank in Elasticsearch results, if present")
+    semantic_rank: int | None = Field(default=None, description="1-based rank in Redis vector results, if present")
 
 
 class SearchResponse(BaseModel):

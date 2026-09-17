@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.schemas import AskRequest, AskResponse, SearchRequest, SearchResponse
+from app.services.rag import split_section
 from app.services.retrieval import search as do_search
 
 router = APIRouter()
@@ -22,20 +23,24 @@ def _sanitize_context(text: str) -> str:
 @router.post("/search", response_model=SearchResponse)
 def search(req: SearchRequest):
     chunks = do_search(req.query, mode=req.mode, top_k=req.top_k)
-    return {
-        "query": req.query,
-        "mode": req.mode,
-        "results": [
+    results = []
+    for c in chunks:
+        section, body = split_section(c.text)
+        results.append(
             {
                 "doc_id": c.doc_id,
                 "chunk_id": c.chunk_id,
+                "filename": c.filename,
+                "page": c.page,
+                "section": section,
                 "score": float(c.score),
-                "snippet": c.text[:240] + ("…" if len(c.text) > 240 else ""),
+                "snippet": body[:240] + ("…" if len(body) > 240 else ""),
                 "mode": req.mode,
+                "keyword_rank": c.keyword_rank,
+                "semantic_rank": c.semantic_rank,
             }
-            for c in chunks
-        ],
-    }
+        )
+    return {"query": req.query, "mode": req.mode, "results": results}
 
 
 @router.post("/ask", response_model=AskResponse)
