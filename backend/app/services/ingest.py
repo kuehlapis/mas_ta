@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 
 import numpy as np
+from elasticsearch import helpers
 
 from app.services.rag import chunk_text, embed_hash, split_pages
 from app.services.store import get_conn
@@ -82,9 +83,19 @@ def ingest_document(doc_id: str) -> int:
                 (chunk_id, doc_id, i, page, text, emb.tobytes()),
             )
 
-            actions.append({"index": {"_index": ES_INDEX}})
             actions.append(
-                {"doc_id": doc_id, "chunk_id": chunk_id, "filename": filename, "ord": i, "page": page, "text": text}
+                {
+                    "_index": ES_INDEX,
+                    "_id": chunk_id,
+                    "_source": {
+                        "doc_id": doc_id,
+                        "chunk_id": chunk_id,
+                        "filename": filename,
+                        "ord": i,
+                        "page": page,
+                        "text": text,
+                    },
+                }
             )
 
             key = f"{REDIS_PREFIX}{doc_id}:{chunk_id}"
@@ -101,7 +112,7 @@ def ingest_document(doc_id: str) -> int:
             )
 
     if actions:
-        es.bulk(operations=actions, refresh=True)
+        helpers.bulk(es, actions, refresh=True)
     pipe.execute()
 
     return len(chunks)

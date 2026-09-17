@@ -18,7 +18,7 @@ PAGE_BREAK = "\f"
 
 MAX_CHUNK_CHARS = 1500
 CHUNK_OVERLAP = 150
-MIN_SECTION_CHARS = 200  # smaller sections (usually a lone heading) are merged into the next one
+MIN_SECTION_CHARS = 200
 
 _HEADERS = [("#" * i, f"h{i}") for i in range(1, 7)]
 
@@ -33,10 +33,10 @@ def pdf_to_text(data: bytes) -> str:
 
 
 def _clean_markdown(md: str) -> str:
-    md = md.replace("�", "'")  # curly quotes the PDF font fails to map
+    md = md.replace("�", "'")  
     md = re.sub(r"<!-- (Start|End) of picture text -->", "", md)
     md = md.replace("<br>", " ")
-    md = re.sub(r"^[ \t]*\d{1,3}[ \t]*$", "", md, flags=re.M)  # page-number footer lines
+    md = re.sub(r"^[ \t]*\d{1,3}[ \t]*$", "", md, flags=re.M)
     return re.sub(r"\n{3,}", "\n\n", md).strip()
 
 
@@ -77,7 +77,7 @@ def chunk_text(text: str) -> list[str]:
             continue
         carry = ""
         merged.append((heading, body))
-    if carry:  # short trailing section: attach to the previous one, or keep alone
+    if carry:
         if merged:
             merged[-1] = (merged[-1][0], f"{merged[-1][1]}\n\n{carry}")
         else:
@@ -126,6 +126,7 @@ class ScoredChunk:
     filename: str = ""
     keyword_rank: int | None = None  # 1-based position in the Elasticsearch results
     semantic_rank: int | None = None  # 1-based position in the Redis KNN results
+    rerank_rank: int | None = None  # 1-based position after cross-encoder reranking (hybrid only)
 
 
 def split_section(text: str) -> tuple[str, str]:

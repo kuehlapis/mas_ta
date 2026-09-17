@@ -18,7 +18,9 @@ ES_PROPERTIES = {
     "filename": {"type": "keyword"},
     "ord": {"type": "integer"},
     "page": {"type": "integer"},
-    "text": {"type": "text"},
+    # "text" keeps exact word forms (names, codes like "AML/CFT"); "text.en" adds English
+    # stemming and stopword removal so "fined"/"fines" and "penalties"/"penalty" match.
+    "text": {"type": "text", "fields": {"en": {"type": "text", "analyzer": "english"}}},
 }
 
 

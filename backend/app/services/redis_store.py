@@ -27,7 +27,6 @@ def ensure_redis_index() -> None:
         info = None
 
     if info is not None:
-        # migrate indexes created before page tracking
         existing = {str(a[1], "utf-8") if isinstance(a[1], bytes) else str(a[1]) for a in info["attributes"]}
         for field in (NumericField("page"), TagField("filename")):
             if field.name not in existing:
