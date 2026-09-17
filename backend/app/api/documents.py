@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from app.schemas import DocumentCreateResponse, DocumentListResponse, IngestResponse
@@ -29,7 +30,7 @@ async def upload_document(file: UploadFile | None = File(default=None), body: Te
             raise HTTPException(status_code=413, detail="File too large (max 5MB).")
         if data.startswith(b"%PDF"):
             try:
-                content = pdf_to_text(data)
+                content = await run_in_threadpool(pdf_to_text, data)  # ~15s for a 27-page PDF
             except Exception:
                 raise HTTPException(status_code=400, detail="Could not read PDF.")
         else:
