@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import redis
-from redis.commands.search.field import TextField, TagField, VectorField
+from redis.commands.search.field import NumericField, TextField, TagField, VectorField
 from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 
 REDIS_URL = os.getenv("DOCQA_REDIS_URL", "redis://localhost:6379/0")
@@ -19,14 +19,23 @@ def redis_client() -> redis.Redis:
 def ensure_redis_index() -> None:
     r = redis_client()
     try:
-        r.ft(REDIS_INDEX).info()
-        return
+        info = r.ft(REDIS_INDEX).info()
     except Exception:
-        pass
+        info = None
+
+    if info is not None:
+        # migrate indexes created before page tracking
+        existing = {str(a[1], "utf-8") if isinstance(a[1], bytes) else str(a[1]) for a in info["attributes"]}
+        for field in (NumericField("page"), TagField("filename")):
+            if field.name not in existing:
+                r.ft(REDIS_INDEX).alter_schema_add(field)
+        return
 
     schema = (
         TagField("doc_id"),
         TagField("chunk_id"),
+        TagField("filename"),
+        NumericField("page"),
         TextField("text"),
         VectorField(
             "embedding",

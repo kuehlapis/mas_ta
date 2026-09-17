@@ -5,6 +5,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException
 from pydantic import BaseModel, Field
 
 from app.schemas import DocumentCreateResponse, DocumentListResponse, IngestResponse
+from app.services.rag import pdf_to_text
 from app.services.ingest import create_document, ingest_document, list_documents
 
 router = APIRouter(prefix="/documents")
@@ -26,7 +27,13 @@ async def upload_document(file: UploadFile | None = File(default=None), body: Te
         data = await file.read()
         if len(data) > 5 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="File too large (max 5MB).")
-        content = data.decode("utf-8", errors="replace")
+        if data.startswith(b"%PDF"):
+            try:
+                content = pdf_to_text(data)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Could not read PDF.")
+        else:
+            content = data.decode("utf-8", errors="replace")
         doc_id = create_document(filename=file.filename or "upload.txt", content=content)
         return {"doc_id": doc_id}
 

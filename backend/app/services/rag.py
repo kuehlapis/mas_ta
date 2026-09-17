@@ -11,23 +11,69 @@ def _normalize_whitespace(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+PAGE_BREAK = "\f"
+
+
+def extract_pdf_pages(data: bytes) -> list[str]:
+    """Return the text of each PDF page, cleaned of layout line breaks."""
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(BytesIO(data))
+    return [_clean_pdf_text(p.extract_text() or "") for p in reader.pages]
+
+
+def _clean_pdf_text(text: str) -> str:
+    text = text.replace("�", "'")  # curly quotes the PDF font fails to map
+    text = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1-\2", text)  # "non-\ncompliance"
+    return _normalize_whitespace(text)
+
+
+def pdf_to_text(data: bytes) -> str:
+    """Join pages with form feeds so ingestion can recover page numbers."""
+    return PAGE_BREAK.join(extract_pdf_pages(data))
+
+
+def split_pages(content: str) -> list[tuple[int, str]]:
+    """(1-based page number, text) pairs; plain-text documents are a single page."""
+    return [(i + 1, p) for i, p in enumerate(content.split(PAGE_BREAK)) if p.strip()]
+
+
+def _sentences(text: str, max_chars: int) -> list[str]:
+    units: list[str] = []
+    for s in re.split(r"(?<=[.!?])\s+", _normalize_whitespace(text)):
+        while len(s) > max_chars:  # no sentence boundary (tables, infographics): cut on a word
+            cut = s.rfind(" ", 0, max_chars)
+            cut = cut if cut > 0 else max_chars
+            units.append(s[:cut])
+            s = s[cut:].strip()
+        if s:
+            units.append(s)
+    return units
+
+
 def chunk_text(text: str, *, max_chars: int = 900, overlap: int = 120) -> list[str]:
-    paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+    """Pack sentences into chunks of up to max_chars, repeating trailing sentences
+    (up to `overlap` chars) at the start of the next chunk."""
     chunks: list[str] = []
-    cur = ""
-    for p in paras:
-        p = _normalize_whitespace(p)
-        if not cur:
-            cur = p
-            continue
-        if len(cur) + 1 + len(p) <= max_chars:
-            cur = f"{cur} {p}"
-        else:
-            chunks.append(cur)
-            tail = cur[-overlap:] if overlap > 0 else ""
-            cur = (tail + " " + p).strip() if tail else p
+    cur: list[str] = []
+    cur_len = 0
+    for s in _sentences(text, max_chars):
+        if cur and cur_len + 1 + len(s) > max_chars:
+            chunks.append(" ".join(cur))
+            tail: list[str] = []
+            for prev in reversed(cur):
+                if sum(len(t) + 1 for t in tail) + len(prev) > overlap:
+                    break
+                tail.insert(0, prev)
+            cur, cur_len = tail, sum(len(t) + 1 for t in tail)
+            while cur and cur_len + len(s) > max_chars:  # overlap must not push past the limit
+                cur_len -= len(cur.pop(0)) + 1
+        cur.append(s)
+        cur_len += len(s) + 1
     if cur:
-        chunks.append(cur)
+        chunks.append(" ".join(cur))
     return chunks
 
 
@@ -58,3 +104,5 @@ class ScoredChunk:
     chunk_id: str
     text: str
     score: float
+    page: int = 1
+    filename: str = ""
